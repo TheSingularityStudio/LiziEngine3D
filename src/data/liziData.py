@@ -9,24 +9,27 @@ class ParticleDataManager:
         self.particles = []  # 存储粒子信息的列表，每个粒子是一个字典，包含坐标、速度、加速度、电荷量等属性
 
 
-    def add_particle(self, r, v, a, q):
+    def add_particle(self, r, v, a, q, m):
         """
         添加一个粒子。
         :param r: 粒子的坐标 (x, y, z)
         :param v: 粒子的速度
         :param a: 粒子的加速度
         :param q: 粒子的电荷量
+        :param m: 粒子的质量
         """
         particle = {
             'r': r,
             'v': v,
             'a': a,
-            'q': q
+            'q': q,
+            'm': m
         }
         self.particles.append(particle)
 
 
-    def update_particle(self, index, r=None, v=None, a=None, q=None):
+
+    def update_particle(self, index, r=None, v=None, a=None, q=None, m=None):
         """
         更新指定粒子的属性。
         :param index: 粒子索引
@@ -34,6 +37,7 @@ class ParticleDataManager:
         :param v: 新的速度（可选）
         :param a: 新的加速度（可选）
         :param q: 新的电荷量（可选）
+        :param m: 新的质量（可选）
         """
         if 0 <= index < len(self.particles):
             if r is not None:
@@ -44,8 +48,11 @@ class ParticleDataManager:
                 self.particles[index]['a'] = a
             if q is not None:
                 self.particles[index]['q'] = q
+            if m is not None:
+                self.particles[index]['m'] = m
         else:
             raise IndexError("粒子索引超出范围")
+
 
 
     def get_particle(self, index):
