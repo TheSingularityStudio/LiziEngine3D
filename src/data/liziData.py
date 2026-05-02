@@ -1,43 +1,52 @@
 """
-粒子数据管理器，管理粒子的属性（包含加速度，速度，电荷量等）。
+粒子数据管理器，管理粒子的属性（包含坐标，速度，加速度，电荷量等）。
 """
+
 
 class ParticleDataManager:
     def __init__(self):
         # 初始化粒子属性
-        self.particles = []  # 存储粒子信息的列表，每个粒子是一个字典，包含加速度、速度、电荷量等属性
+        self.particles = []  # 存储粒子信息的列表，每个粒子是一个字典，包含坐标、速度、加速度、电荷量等属性
 
-    def add_particle(self, acceleration, velocity, charge):
+
+    def add_particle(self, r, v, a, q):
         """
         添加一个粒子。
-        :param acceleration: 粒子的加速度
-        :param velocity: 粒子的速度
-        :param charge: 粒子的电荷量
+        :param r: 粒子的坐标 (x, y, z)
+        :param v: 粒子的速度
+        :param a: 粒子的加速度
+        :param q: 粒子的电荷量
         """
         particle = {
-            'acceleration': acceleration,
-            'velocity': velocity,
-            'charge': charge
+            'r': r,
+            'v': v,
+            'a': a,
+            'q': q
         }
         self.particles.append(particle)
 
-    def update_particle(self, index, acceleration=None, velocity=None, charge=None):
+
+    def update_particle(self, index, r=None, v=None, a=None, q=None):
         """
         更新指定粒子的属性。
         :param index: 粒子索引
-        :param acceleration: 新的加速度（可选）
-        :param velocity: 新的速度（可选）
-        :param charge: 新的电荷量（可选）
+        :param r: 新的坐标（可选）
+        :param v: 新的速度（可选）
+        :param a: 新的加速度（可选）
+        :param q: 新的电荷量（可选）
         """
         if 0 <= index < len(self.particles):
-            if acceleration is not None:
-                self.particles[index]['acceleration'] = acceleration
-            if velocity is not None:
-                self.particles[index]['velocity'] = velocity
-            if charge is not None:
-                self.particles[index]['charge'] = charge
+            if r is not None:
+                self.particles[index]['r'] = r
+            if v is not None:
+                self.particles[index]['v'] = v
+            if a is not None:
+                self.particles[index]['a'] = a
+            if q is not None:
+                self.particles[index]['q'] = q
         else:
             raise IndexError("粒子索引超出范围")
+
 
     def get_particle(self, index):
         """
