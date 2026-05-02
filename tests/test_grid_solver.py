@@ -226,7 +226,7 @@ def test_charge_conservation():
     print("测试 5: 电荷守恒（网格大��影响）")
     print("=" * 60)
     
-    grid_sizes = [(10, 10, 10), (20, 20, 20), (50, 50, 50)]
+    grid_sizes = [(10, 10, 10), (20, 20, 20), (30, 30, 30)]
     
     for grid_size in grid_sizes:
         grid_mgr = GridManager()

@@ -5,7 +5,7 @@
 
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import cg, gmres
 from typing import Optional, Tuple
 from enum import Enum
 
@@ -307,6 +307,10 @@ class GridSolver:
         # 构建右侧向量
         rhs = -rho.flatten() / self.epsilon_0
         
+        # 对于周期性边界，确保 rhs 与常数模式正交（总和为 0）
+        if self.boundary == BoundaryCondition.PERIODIC:
+            rhs -= np.mean(rhs)
+        
         # 吸收边界：边界点右侧设为 0
         if self.boundary == BoundaryCondition.ABSORBING:
             def idx(i: int, j: int, k: int) -> int:
@@ -321,7 +325,14 @@ class GridSolver:
         
         # 构建拉普拉斯矩阵并求解
         laplacian = self._build_laplacian_matrix()
-        phi_flat = spsolve(laplacian, rhs)
+        
+        if self.boundary == BoundaryCondition.PERIODIC:
+            phi_flat, info = gmres(laplacian, rhs, rtol=1e-6, maxiter=2000)
+        else:
+            phi_flat, info = cg(laplacian, rhs, rtol=1e-6, maxiter=1000)
+        
+        if info != 0:
+            raise RuntimeError(f"求解器未收敛，info={info}")
         
         # 重塑为 3D 数组
         phi = phi_flat.reshape((nx, ny, nz))
