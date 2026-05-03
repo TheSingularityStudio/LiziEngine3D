@@ -16,6 +16,8 @@ from src.data.gridData import GridManager, FieldType
 from src.solver.gridSolver import GridSolver, BoundaryCondition
 from src.solver.liziSolver import ParticleSolver
 from src.core.simulation import SimulationController, print_field_max, energy_conservation_check
+from src.visualization.realtime_visualizer import RealTimeVisualizer
+import threading
 
 
 def main():
@@ -65,22 +67,20 @@ def main():
     # 添加诊断
     sim.add_diagnostic(print_field_max)
     sim.add_diagnostic(energy_conservation_check)
-    
-    # 5. 运行 20 步模拟
-    sim.run(n_steps=20)
-    
-    # 6. 最终统计
-    stats = sim.get_stats()
-    print("\n=== 模拟统计 ===")
-    print(f"总步数: {stats['steps']}")
-    print(f"最终粒子数: {stats['n_particles']}")
-    print(f"能量变化: {abs(stats['total_energy'][-1] - stats['total_energy'][0]):.2e}")
-    print(f"电荷守恒: {abs(stats['total_charge'][-1] - stats['total_charge'][0]):.2e}")
-    
-    # 验证：粒子应相互吸引，动能增加
-    final_positions = [p['r'] for p in particle_mgr.list_particles()]
-    print(f"最终位置: {final_positions}")
-    
+
+    # 创建实时可视化器
+    visualizer = RealTimeVisualizer(grid_mgr, particle_mgr)
+
+    # 在后台线程中运行模拟
+    def run_simulation():
+        sim.run(n_steps=20)
+
+    sim_thread = threading.Thread(target=run_simulation)
+    sim_thread.start()
+
+    # 在主线程中运行可视化
+    visualizer.run(interval=100)
+
     print("\n✅ 示例完成！检查输出：粒子吸引 + 能量守恒。")
 
 
