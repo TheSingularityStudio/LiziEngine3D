@@ -54,7 +54,6 @@ class ParticleDataManager:
             raise IndexError("粒子索引超出范围")
 
 
-
     def get_particle(self, index):
         """
         获取指定粒子的属性。
