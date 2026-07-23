@@ -1,5 +1,4 @@
 use ndarray::Array1;
-use ndarray::Array3;
 use lizi_engine_3d::core::grid::Grid3D;
 use lizi_engine_3d::core::particles::ParticleState;
 use lizi_engine_3d::core::sim::ElectrostaticSim3D;
@@ -8,11 +7,7 @@ use rand::Rng;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-fn periodic_delta(a: f64, b: f64, period: f64) -> f64 {
-    let d = a - b;
-    ((d + 0.5 * period).rem_euclid(period)) - 0.5 * period
-}
-
+#[allow(dead_code)]
 fn l2_norm(a: &Array1<f64>) -> f64 {
     a.iter().map(|v| v * v).sum::<f64>().sqrt()
 }
@@ -59,7 +54,7 @@ fn validate_single_charge_direction_consistency() {
         for &th in &sample_angles {
             let gx = cx + r as f64 * th.cos();
             let gy = cy + r as f64 * th.sin();
-            let gz = 16.0; // mid-plane
+            let _gz = 16.0; // mid-plane
 
             let gxw = ((gx % lx) + lx) % lx;
             let gyw = ((gy % ly) + ly) % ly;
@@ -94,6 +89,11 @@ fn validate_single_charge_direction_consistency() {
 
     let err = if errors.is_empty() { 0.0 } else { errors.iter().sum::<f64>() / errors.len() as f64 };
     assert!(err <= 6e-1, "平均方向误差(1-cos)={:.6e} 超出阈值", err);
+}
+
+fn periodic_delta(a: f64, b: f64, period: f64) -> f64 {
+    let d = a - b;
+    ((d + 0.5 * period).rem_euclid(period)) - 0.5 * period
 }
 
 /// 随机初始条件数值稳定性验证
