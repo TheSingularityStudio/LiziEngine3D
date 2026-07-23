@@ -2,11 +2,11 @@ use std::sync::Arc;
 use eframe::egui;
 use egui::menu;
 
+use crate::gui::gl_renderer::GlRenderer;
 use crate::gui::interaction::{InteractionState, ToolMode, HoveredParticleInfo, OrbitCamera};
 use crate::core::sim::ElectrostaticSim3D;
 use crate::core::boundary::BoundaryType;
 use crate::presets::PresetVariant;
-use crate::visual::colors::heatmap_rgb;
 
 fn load_chinese_fonts(fonts: &mut egui::FontDefinitions) -> bool {
     let font_candidates = [
@@ -44,6 +44,7 @@ struct SimulationState {
     show_about_dialog: bool,
     show_shortcuts_dialog: bool,
     message_dialog: Option<String>,
+    gl_renderer: Option<Arc<GlRenderer>>,
 }
 
 pub struct LiziApp {
@@ -67,7 +68,11 @@ impl LiziApp {
                     eprintln!("warning: no chinese fonts");
                 }
                 cc.egui_ctx.set_fonts(fonts);
-                Ok(Box::new(LiziApp { state: None }))
+
+                // Initialize GlRenderer with glow context
+                Ok(Box::new(LiziApp {
+                    state: None,
+                }))
             }),
         );
     }
@@ -94,10 +99,11 @@ impl LiziApp {
                                     variant: *variant, sim, paused: false,
                                     v_min: 0.0, v_max: 1.0,
                                     interaction: InteractionState::new(),
-                                show_left_panel: true, show_right_panel: true,
+                                    show_left_panel: true, show_right_panel: true,
                                     show_heatmap: true, show_grid: false, show_axes: true,
                                     show_about_dialog: false, show_shortcuts_dialog: false,
                                     message_dialog: None,
+                                    gl_renderer: None,
                                 });
                             }
                             ui.add_space(10.0); ui.label(desc);
@@ -265,7 +271,8 @@ fn render_right_panel(ctx: &egui::Context, state: &mut SimulationState) {
     });
 }
 
-/// 3D projection (software render)
+/// 3D projection for interaction (hover/drag/place/delete).
+/// Screen coordinates: x right, y down. Returns (sx, sy, depth).
 fn project_3d(
     wx: f64, wy: f64, wz: f64,
     cam: &OrbitCamera,
@@ -280,9 +287,11 @@ fn project_3d(
     let d = cam.distance.max(0.1);
     let (ca, sa) = cam.azimuth.sin_cos();
     let (ce, se) = cam.elevation.sin_cos();
+    // rotate around Y (azimuth)
     let rx = px * ca - pz * sa;
     let rz = px * sa + pz * ca;
     px = rx; pz = rz;
+    // rotate around X (elevation)
     let ry = py * ce - pz * se;
     let rz2 = py * se + pz * ce;
     py = ry; pz = rz2;
@@ -291,7 +300,11 @@ fn project_3d(
     Some((px * scale, -py * scale, zc))
 }
 
-fn render_simulation_canvas(ctx: &egui::Context, state: &mut SimulationState) {
+fn render_simulation_canvas(
+    ctx: &egui::Context,
+    gl: Option<&std::sync::Arc<eframe::glow::Context>>,
+    state: &mut SimulationState,
+) {
     let sim = &mut state.sim;
     let v_min = &mut state.v_min;
     let v_max = &mut state.v_max;
@@ -301,8 +314,6 @@ fn render_simulation_canvas(ctx: &egui::Context, state: &mut SimulationState) {
         let (rect, _response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
         let painter = ui.painter();
         let bg = ui.style().visuals.panel_fill;
-        painter.rect_filled(rect, 0.0, bg);
-        painter.rect_stroke(rect, 0.0, (1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
 
         let cx = rect.center();
         let size = rect.width().min(rect.height()) * 0.95;
@@ -312,7 +323,7 @@ fn render_simulation_canvas(ctx: &egui::Context, state: &mut SimulationState) {
             sim.compute_fields();
         }
         let snapshot = sim.get_state_snapshot();
-        let (nx, ny, nz) = snapshot.v.dim();
+        let (_nx, _ny, _nz) = snapshot.v.dim();
 
         let mut min_v = f64::MAX; let mut max_v = f64::MIN;
         for val in snapshot.v.iter() { if *val < min_v { min_v = *val; } if *val > max_v { max_v = *val; } }
@@ -320,14 +331,53 @@ fn render_simulation_canvas(ctx: &egui::Context, state: &mut SimulationState) {
         *v_max = *v_max * 0.9 + max_v * 0.1;
         if (*v_max - *v_min).abs() < 1e-12 { *v_max = *v_min + 1.0; }
 
-        // Mouse state
+        // ---- GPU 3D rendering via PaintCallback ----
+        if let (Some(gl_ctx), Some(ref renderer)) = (gl, &state.gl_renderer) {
+            // Update heatmap texture on GPU
+            let v_min_copy = *v_min;
+            let v_max_copy = *v_max;
+            let snap_v = snapshot.v.clone();
+            if state.show_heatmap {
+                renderer.update_heatmap(gl_ctx, &snap_v, v_min_copy, v_max_copy);
+            }
+
+            // Clone snapshot for GPU callback (original stays for CPU interaction)
+            let snapshot_for_gpu = snapshot.clone();
+            let camera = interaction.camera.clone();
+            let show_heatmap = state.show_heatmap;
+            let show_grid = state.show_grid;
+            let show_axes = state.show_axes;
+            let renderer = state.gl_renderer.clone().unwrap();
+
+            let cb = egui_glow::CallbackFn::new(move |_info, egui_painter| {
+                let gl = egui_painter.gl();
+                renderer.render_scene(
+                    gl,
+                    &snapshot_for_gpu,
+                    &camera,
+                    show_heatmap,
+                    show_grid,
+                    show_axes,
+                    (rect.min.x, rect.min.y, rect.width(), rect.height()),
+                );
+            });
+
+            painter.add(egui::Shape::Callback(egui::PaintCallback {
+                rect,
+                callback: std::sync::Arc::new(cb),
+            }));
+        } else {
+            // Fallback: draw background rectangle only
+            painter.rect_filled(rect, 0.0, bg);
+        }
+
+        // ---- Mouse & Interaction (CPU-side) ----
         let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
         let mouse_down = ctx.input(|i| i.pointer.any_down());
         let mp = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
         let ms = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
         let scroll = ctx.input(|i| i.raw_scroll_delta);
 
-        // Camera control (Inspect mode)
         let cam = &mut interaction.camera;
         if interaction.tool_mode == ToolMode::Inspect {
             if let Some(pos) = mouse_pos {
@@ -354,13 +404,12 @@ fn render_simulation_canvas(ctx: &egui::Context, state: &mut SimulationState) {
             }
         }
 
-        // Pre-compute all particle projections
-        struct PDraw { sx: f32, sy: f32, depth: f32, color: egui::Color32, idx: usize }
+        // Pre-compute particle projections for interaction (CPU)
+        struct PDraw { sx: f32, sy: f32, depth: f32, idx: usize }
         let mut draws: Vec<PDraw> = Vec::new();
         for i in 0..snapshot.x.len() {
             if let Some((sx, sy, depth)) = project_3d(snapshot.x[i], snapshot.y[i], snapshot.z[i], cam, snapshot.lx, snapshot.ly, snapshot.lz) {
-                let color = if snapshot.q[i] < 0.0 { egui::Color32::CYAN } else { egui::Color32::WHITE };
-                draws.push(PDraw { sx: cx.x + sx * half, sy: cx.y + sy * half, depth, color, idx: i });
+                draws.push(PDraw { sx: cx.x + sx * half, sy: cx.y + sy * half, depth, idx: i });
             }
         }
         draws.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
@@ -385,70 +434,16 @@ fn render_simulation_canvas(ctx: &egui::Context, state: &mut SimulationState) {
             }
         }
 
-        // Draw heatmap slice at mid z
-        if state.show_heatmap {
-            let mk = nz / 2;
-            let step = if nx > 64 { nx / 64 } else { 1 };
-            for i in (0..nx).step_by(step) {
-                for j in (0..ny).step_by(step) {
-                    let wx = (i as f64 + 0.5) * snapshot.lx / nx as f64;
-                    let wy = (j as f64 + 0.5) * snapshot.ly / ny as f64;
-                    let wz = (mk as f64 + 0.5) * snapshot.lz / nz as f64;
-                    if let Some((sx, sy, depth)) = project_3d(wx, wy, wz, cam, snapshot.lx, snapshot.ly, snapshot.lz) {
-                        let val = snapshot.v[[i, j, mk]];
-                        let (r, g, b) = heatmap_rgb(val, *v_min, *v_max);
-                        let pw = (half / depth * (snapshot.lx / nx as f64) as f32 * 2.0).max(1.5);
-                        let ph = (half / depth * (snapshot.ly / ny as f64) as f32 * 2.0).max(1.5);
-                        painter.rect_filled(egui::Rect::from_center_size(egui::pos2(cx.x + sx * half, cx.y + sy * half), egui::vec2(pw, ph)), 0.0, egui::Color32::from_rgb(r, g, b));
-                    }
-                }
-            }
-        }
-
-        // Draw grid
-        if state.show_grid {
-            let gc = egui::Color32::from_gray(100);
-            for i in 0..=8 {
-                let f = i as f64 / 8.0;
-                if let (Some((x1, y1, _)), Some((x2, y2, _))) = (project_3d(f * snapshot.lx, 0.0, 0.0, cam, snapshot.lx, snapshot.ly, snapshot.lz), project_3d(f * snapshot.lx, snapshot.ly, 0.0, cam, snapshot.lx, snapshot.ly, snapshot.lz)) {
-                    painter.line_segment([egui::pos2(cx.x + x1 * half, cx.y + y1 * half), egui::pos2(cx.x + x2 * half, cx.y + y2 * half)], (0.5, gc));
-                }
-                if let (Some((x1, y1, _)), Some((x2, y2, _))) = (project_3d(0.0, f * snapshot.ly, 0.0, cam, snapshot.lx, snapshot.ly, snapshot.lz), project_3d(snapshot.lx, f * snapshot.ly, 0.0, cam, snapshot.lx, snapshot.ly, snapshot.lz)) {
-                    painter.line_segment([egui::pos2(cx.x + x1 * half, cx.y + y1 * half), egui::pos2(cx.x + x2 * half, cx.y + y2 * half)], (0.5, gc));
-                }
-            }
-        }
-
-        // Draw axes
-        if state.show_axes {
-            let al = 0.3f32;
-            if let Some((ox, oy, _)) = project_3d(0.0, 0.0, 0.0, cam, snapshot.lx, snapshot.ly, snapshot.lz) {
-                let o = egui::pos2(cx.x + ox * half, cx.y + oy * half);
-                if let Some((xx, xy, _)) = project_3d(snapshot.lx * al as f64, 0.0, 0.0, cam, snapshot.lx, snapshot.ly, snapshot.lz) {
-                    painter.line_segment([o, egui::pos2(cx.x + xx * half, cx.y + xy * half)], (2.0, egui::Color32::RED));
-                }
-                if let Some((yx, yy, _)) = project_3d(0.0, snapshot.ly * al as f64, 0.0, cam, snapshot.lx, snapshot.ly, snapshot.lz) {
-                    painter.line_segment([o, egui::pos2(cx.x + yx * half, cx.y + yy * half)], (2.0, egui::Color32::GREEN));
-                }
-                if let Some((zx, zy, _)) = project_3d(0.0, 0.0, snapshot.lz * al as f64, cam, snapshot.lx, snapshot.ly, snapshot.lz) {
-                    painter.line_segment([o, egui::pos2(cx.x + zx * half, cx.y + zy * half)], (2.0, egui::Color32::BLUE));
-                }
-            }
-        }
-
-        // Draw particles
-        for d in &draws {
-            let r = if interaction.tool_mode == ToolMode::Inspect { if let Some(h) = &interaction.hovered_particle { if h.index == d.idx { 6.0 } else { 3.0 } } else { 3.0 } } else { 3.0 };
-            painter.circle_filled(egui::pos2(d.sx, d.sy), r, d.color);
-            if interaction.tool_mode == ToolMode::Inspect {
-                if let Some(h) = &interaction.hovered_particle {
-                    if h.index == d.idx {
-                        painter.circle_stroke(egui::pos2(d.sx, d.sy), 8.0, (2.0, egui::Color32::YELLOW));
-                        let tip = egui::pos2(d.sx + 10.0, d.sy - 30.0);
-                        painter.text(tip, egui::Align2::LEFT_TOP,
-                            format!("#{} q={:.2} ({:.3},{:.3},{:.3})", h.index, h.q, h.x, h.y, h.z),
-                            egui::TextStyle::Body.resolve(ui.style()), egui::Color32::YELLOW);
-                    }
+        // CPU overlays: hover highlight + tooltip
+        if let Some(h) = &interaction.hovered_particle {
+            for d in &draws {
+                if d.idx == h.index {
+                    painter.circle_stroke(egui::pos2(d.sx, d.sy), 8.0, (2.0, egui::Color32::YELLOW));
+                    let tip = egui::pos2(d.sx + 10.0, d.sy - 30.0);
+                    painter.text(tip, egui::Align2::LEFT_TOP,
+                        format!("#{} q={:.2} ({:.3},{:.3},{:.3})", h.index, h.q, h.x, h.y, h.z),
+                        egui::TextStyle::Body.resolve(ui.style()), egui::Color32::YELLOW);
+                    break;
                 }
             }
         }
@@ -509,24 +504,46 @@ fn render_simulation_canvas(ctx: &egui::Context, state: &mut SimulationState) {
         }
 
         if !mouse_down { interaction.dragging = false; interaction.dragged_particle_index = None; }
+
+        // Border (drawn last, on top)
+        painter.rect_stroke(rect, 0.0, (1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
     });
 }
 
-fn render_simulation_panels(ctx: &egui::Context, state: &mut SimulationState) -> bool {
+fn render_simulation_panels(
+    ctx: &egui::Context,
+    gl: Option<&std::sync::Arc<eframe::glow::Context>>,
+    state: &mut SimulationState,
+) -> bool {
     let back = render_menu_bar(ctx, state);
     render_dialogs(ctx, state);
     render_left_panel(ctx, state);
     render_right_panel(ctx, state);
-    render_simulation_canvas(ctx, state);
+    render_simulation_canvas(ctx, gl, state);
     if !state.paused { state.sim.step(state.variant.config().dt); ctx.request_repaint(); }
     !back
 }
 
 impl eframe::App for LiziApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Some(ref mut state) = self.state {
-            if !render_simulation_panels(ctx, state) { self.state = None; }
-            else if !state.paused { ctx.request_repaint(); }
-        } else { self.render_preset_selection(ctx); }
+            // Lazily initialize GlRenderer when entering simulation
+            if state.gl_renderer.is_none() {
+                if let Some(gl) = frame.gl() {
+                    let renderer = GlRenderer::new(gl);
+                    state.gl_renderer = Some(Arc::new(renderer));
+                }
+            }
+
+            let gl_ref = frame.gl();
+            let gl_opt: Option<&std::sync::Arc<eframe::glow::Context>> = gl_ref;
+            if !render_simulation_panels(ctx, gl_opt, state) {
+                self.state = None;
+            } else if !state.paused {
+                ctx.request_repaint();
+            }
+        } else {
+            self.render_preset_selection(ctx);
+        }
     }
 }

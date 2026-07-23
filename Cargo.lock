@@ -2082,6 +2082,7 @@ dependencies = [
  "bincode",
  "clap",
  "eframe",
+ "egui_glow",
  "image",
  "ndarray",
  "ndrustfft",
